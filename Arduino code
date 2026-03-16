@@ -1,0 +1,394 @@
+//Source code for the Arduino
+
+//LIBRARIES
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <ArduinoJson.h>
+//FUNCTION PROTOTYPES 
+void sendToSupabase(float energyValue, float tariffValue);
+void sendNoData();
+void getTariff();
+void sendUIDToSupabase(String uid); 
+//WIFI DETAILS
+const char* ssid = "Ene";
+const char* password = "Baby_010509";
+//SUPABASE DETAILS
+const char* supabase_url =
+"https://gsbavtzdhevjloibivgr.supabase.co/functions/v1/solar-pay";
+const char* supabase_anon_key =
+"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdzYmF2dHpkaGV2amxvaWJpdmdyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY5MDU4NDMsImV4cCI6MjA4MjQ4MTg0M30.opLBzWRug1XGX1LDvFtYU4yma8l-u8i_Fc_UDFlccoY";
+//TIMING
+unsigned long lastPostTime = 0;
+unsigned long lastTariffTime = 0;
+const unsigned long POST_INTERVAL   = 2000;   // 2 seconds
+const unsigned long TARIFF_INTERVAL = 1000;  // 1 second
+String incoming = "";
+bool dataReady = false;
+bool uidInProgress = false;
+//DATA 
+float latestEnergy = -1;
+float latestTariff = -1;
+//SETUP
+void setup() {
+  Serial.begin(9600);
+  delay(1000);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+  }
+}
+//LOOP
+void loop() {
+//GET TARIFF AT INTERVALS
+if (millis() - lastTariffTime >= TARIFF_INTERVAL) { 
+  lastTariffTime = millis(); 
+  getTariff(); 
+}
+//READ ENERGY FROM ARDUINO
+  if (Serial.available()) {
+    String msg = Serial.readStringUntil('\n');
+    msg.trim();
+   if (msg.startsWith("ENERGY=")) {
+  String val = msg.substring(7);
+  if (val != "ERR") {
+    latestEnergy = val.toFloat();
+  }
+}
+else if (msg.startsWith("TARIFF=")) {
+  String val = msg.substring(7);
+  latestTariff = val.toFloat();
+  Serial.print("Tariff received: ");
+  Serial.println(latestTariff);
+}
+  }
+//SEND ENERGY TO WEBSITE EVERY 30 SECONDS
+   if (millis() - lastPostTime >= POST_INTERVAL) {
+    lastPostTime = millis();
+    if (latestEnergy >= 0 && latestTariff >= 0) {
+      sendToSupabase(latestEnergy, latestTariff);
+    }
+  }
+while (Serial.available()) {
+  char c = Serial.read();
+  if (c == '<') {
+    incoming = "";
+  }
+  else if (c == '>') {
+    dataReady = true;
+  }
+  else {
+    incoming += c;
+  }
+}
+if (dataReady) {
+  dataReady = false;
+  if (incoming.startsWith("UID=") && !uidInProgress) {
+  uidInProgress = true;
+  String uid = incoming.substring(4);
+  uid.trim();
+   Serial.print("Received UID: ");
+    Serial.println(uid);
+  sendUIDToSupabase(uid);
+  uidInProgress = false;
+}
+}
+}
+//FUNCTION TO GET TARIFF 
+void getTariff() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, supabase_url);
+  http.addHeader("apikey", supabase_anon_key);
+  http.addHeader("Authorization",
+                 String("Bearer ") + supabase_anon_key);
+  int httpCode = http.GET();
+  if (httpCode == HTTP_CODE_OK) {
+    String response = http.getString();
+    StaticJsonDocument<128> doc;
+    if (!deserializeJson(doc, response)) {
+      int tariff = doc["tariff"];
+      Serial.print("<TARIFF:");
+      Serial.print(tariff);
+      Serial.println(">");
+    }
+  }
+  http.end();
+}
+//FUNCTION TO SEND ENERGY TO WEBSITE 
+void sendToSupabase(float energyValue, float tariffValue) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, supabase_url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", supabase_anon_key);
+  http.addHeader("Authorization",
+                 String("Bearer ") + supabase_anon_key);
+  StaticJsonDocument<200> doc;
+  doc["energy"] = energyValue;
+ doc["tariff"] = tariffValue;
+  String payload;
+  serializeJson(doc, payload);
+  int httpCode = http.POST(payload);
+  Serial.print("POST CODE: ");
+  Serial.println(httpCode);
+  http.end();
+}
+//FUNCTION TO SEND NO DATA WHEN NOTHING IS CONNECTED TO PZEM SENSOR
+void sendNoData() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, supabase_url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", supabase_anon_key);
+  http.addHeader("Authorization",
+                 String("Bearer ") + supabase_anon_key);
+  StaticJsonDocument<200> doc;
+  doc["energy"] = nullptr;
+  doc["status"] = "NO_DATA";
+  String payload;
+  serializeJson(doc, payload);
+  int httpCode = http.POST(payload);
+  Serial.print("POST NO DATA CODE: ");
+  Serial.println(httpCode);
+  http.end();
+}
+//FUNCTION TO SEND RFID CARD UID TO WEBSITE
+void sendUIDToSupabase(String uid) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, supabase_url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", supabase_anon_key);
+  http.addHeader("Authorization",
+                 String("Bearer ") + supabase_anon_key);
+  StaticJsonDocument<200> doc;
+  doc["uid"] = uid.c_str();
+  String payload;
+  serializeJson(doc, payload);
+  Serial.println("----- UID DEBUG -----");
+  Serial.println(payload);
+  Serial.println("---------------------");
+  int httpCode = http.POST(payload);
+  Serial.print("UID POST HTTP CODE: ");
+  Serial.println(httpCode);
+  String response = http.getString();
+  Serial.print("UID POST RESPONSE: ");
+  Serial.println(response);
+  if (httpCode >= 200 && httpCode < 300) {
+    StaticJsonDocument<200> resDoc;
+    DeserializationError err = deserializeJson(resDoc, response);
+    if (!err) {
+      bool paid = resDoc["paid"] | false;
+      if (paid) {
+        Serial.println("<AUTH=1>");
+      } else {
+        Serial.println("<AUTH=0>");
+      }
+    } else {
+      Serial.println("UID JSON parse failed");
+    }
+  }
+  http.end(); 
+Arduino Uno Program for Energy and Tariff Data Capture
+//LIBRARIES
+#include <LiquidCrystal_I2C.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <PZEM004Tv30.h>
+#include <SoftwareSerial.h>
+// Set-up for the LCD I2C address, columns, and rows
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
+String incoming = "";
+bool dataReady = false;
+//B25 Voltage sensor
+int analogInput = A0; //Connect input pin to Analogue A0
+float vout = 0.0;
+float vin = 0.0;
+float R1 = 30000.0; //Resistance for resistor R1 for Voltage divider
+float R2 = 7500.0;  //Resistance for resistor R1 for Voltage divider
+int value = 0;
+//ACS712 Current Sensor
+const int currentPin = A1; //Connect input pin to Analogue A1
+int sensitivity = 66;
+int adcValue= 0;
+int offsetVoltage = 2500;
+double adcVoltage = 0;
+double currentValue = 0;
+//RFID Card Reader
+#define SS_PIN 10 // SDA pin for MFRC522
+#define RST_PIN 9 // RST pin for MFRC522
+MFRC522 rfid(SS_PIN, RST_PIN); // Create MFRC522 instance
+// Define authorized RFID UID
+byte authorizedUID[4] = {0x01, 0x0F, 0x1B, 0x06}; // Card's UID
+bool rfidAuthorized = false; //This variable will remember that a valid RFID has been scanned.
+//Relay
+#define RELAY_PIN 7 // Digital pin for controlling the relay
+//bool latched = false;
+// Set-up for PZEM
+// Arduino D2 ← PZEM TX
+// Arduino D3 → PZEM RX
+int rxPin = 2;
+int txPin = 3;
+SoftwareSerial pzemSerial(rxPin, txPin); 
+PZEM004Tv30 pzem(pzemSerial);
+// PZEM 004t AC Energy and Power Sensor
+//float voltage; - PZEM Voltage reading
+//float current; - PZEM Current reading
+//float power;   - PZEM Power reading
+float energy;     //PZEM Energy reading
+float energy_kwh; //PZEM Voltage reading
+//float frequency;
+//float pf;
+//Communication: Arduino to ESP8266
+float energyConsumed = 0.0; 
+//Dynamic Tariff  
+const float BASE_TARIFF = 200;     
+const float DISCOUNT_RATE = 0.30;   //30% discount
+const float VOLTAGE_THRESHOLD = 11.5; //Threshold voltage for dynamic pricing
+float Newtariff = BASE_TARIFF;
+void setup(){
+ pinMode(analogInput, INPUT);     //Pin assignment for B25 Voltage Sensor
+ Serial.begin(9600);              //Baud Rate
+ pzemSerial.begin(9600);          //PZEM communication baud rate
+ lcd.init();                      //Initialize the LCD
+ Serial.println("GET_TARIFF");    //Sends "GET TARRIF TO ESP8266"
+ lcd.backlight();                 //Turn on the backlight
+// Startup screen
+  lcd.setCursor(0, 0);            //Set cursor to the first column, first row on LCD
+  lcd.print("Solar Pay");
+  lcd.setCursor(0, 1);            //Set cursor to the first column, second row on LCD
+  lcd.print("Initializing...");
+  delay(3000);
+  lcd.clear();                    //Clear the display  
+  lcd.setCursor(0, 0);            //Set cursor to the first column, first row on LCD
+  lcd.print("User denied");
+  lcd.setCursor(0, 1);            //Set cursor to the first column, second row on LCD
+  lcd.print("Scan RFID....");
+  delay(3000);
+//Initiate SPI bus for RFID Module
+  SPI.begin();  
+  rfid.PCD_Init();           //Initiate rfis
+  pinMode(RELAY_PIN, OUTPUT);     //Set pin for RFID
+//Initialize relay 
+  digitalWrite(RELAY_PIN, HIGH);  //No switching.
+}
+void loop(){
+//RFID CODE
+if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+
+  bool authorized = true;
+
+  for (byte i = 0; i < 4; i++) {
+    if (rfid.uid.uidByte[i] != authorizedUID[i]) {
+      authorized = false;
+      break;
+    }
+  }
+  if (authorized) {
+    rfidAuthorized = true;              //Enable LCD loop
+    digitalWrite(RELAY_PIN, LOW);       //Power ON
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Access Granted");
+    delay(2000);
+  } else {
+    rfidAuthorized = false;             //Disable LCD loop
+    digitalWrite(RELAY_PIN, HIGH);      // Power OFF
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Access Denied");
+    delay(1500);
+  }
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+}
+//Read the value at analog input to B25 Voltage Sensor
+  value = analogRead(analogInput); 
+  vout = (value * 5.0) / 1024.0;   //Convert analog reading to equivalent bit resolution
+  vin = vout * ((R1+R2)/R2);       //Formula gives the input Voltage
+//Condition for dynamic tariff pricing
+  if (vin < VOLTAGE_THRESHOLD) {
+        Newtariff = BASE_TARIFF;
+    } else {
+        Newtariff = BASE_TARIFF * (1.0 - DISCOUNT_RATE);
+    }
+//Read the value at analog input to ACS712 Current Sensor
+  adcValue = analogRead(currentPin);                               
+  adcVoltage = (adcValue / 1024.0) * 5200;                        //Convert analog reading to equivalent bit resolution
+  currentValue = ((adcVoltage - offsetVoltage) / sensitivity);    //Current flowing from the Solar panel
+  float dcPower = (vin * abs(currentValue));                      //Asssigned Variable to get the power from the Solar Panel
+// Read PZEM variables
+//voltage   = pzem.voltage();   // V
+//current   = pzem.current();   // A
+//power     = pzem.power();     // W
+  energy    = pzem.energy();    // Wh
+//frequency = pzem.frequency(); // Hz
+//pf        = pzem.pf();
+//Parameter display on LCD
+ if (rfidAuthorized) {
+  lcd.clear();              //Clear the display
+  lcd.setCursor(0, 0);      //Set cursor to the first column, first row
+  lcd.print("Power:");      //Show power from solar panel
+  lcd.print(dcPower, 2);    //Total DC Power from the panel
+  lcd.print("W");           //Unit of Power
+   delay(3000);             //Delay before change
+  lcd.clear();              //Clear the display
+  lcd.setCursor(0, 0);      //Set cursor to the first column, first row
+  lcd.print("Energy:");     //Show energy consumption
+  lcd.print(energy, 4);     //Energy in kWh
+  lcd.print("kWh");         //Unit of Energy
+   delay(2000); 
+  lcd.clear();              //Clear the display
+  lcd.setCursor(0, 0);      //Set cursor to the first column, second row
+  lcd.print("Cost:");    //Tariff charge
+  lcd.print(Newtariff);    //Dynamic Tariff
+  lcd.print("N/kWh");      //Unit of Tariff charge
+  delay(3000); 
+
+//Communication from esp8266 to recieve Tariff
+while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '<') {
+      incoming = "";
+    }
+    else if (c == '>') {
+      dataReady = true;
+    }
+    else {
+      incoming += c;
+    }
+  }
+  if (dataReady) {
+    dataReady = false;
+    if (incoming.startsWith("TARIFF:")) {
+      int tariff = incoming.substring(7).toFloat();
+  lcd.setCursor(0, 0);   //Set cursor to the first column, second row
+  lcd.print("Tariff:");  //Tariff charge
+  lcd.print(tariff);
+  lcd.print(" N/kWh");    
+    }
+    }
+
+  delay(3000); // Delay before change
+ }
+ // Measured energy value to be sent to the esp8266
+  float energyConsumed = pzem.energy();
+  if (!isnan(energyConsumed)) {
+    Serial.print("ENERGY=");
+    Serial.println(energyConsumed, 4);  // Send to ESP8266 in 4 decimal places
+    //Tariff to Database
+    Serial.print("TARIFF=");
+    Serial.println(Newtariff, 2);   // send tariff with 2 decimal places
+    delay(2000); // send every 2 seconds 
+  } else {
+    Serial.println("ENERGY=ERR");
+  }
+}
